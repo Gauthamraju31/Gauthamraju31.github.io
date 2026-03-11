@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
+import { playSubtleHoverSound, playClickSound } from '../utils/sounds'
 
 /**
  * Mini particle system rendered inside each interest card.
@@ -89,7 +90,7 @@ export default function InterestCard({ title, icon, route, index }) {
     return (
         <motion.div
             ref={cardRef}
-            className="interest-card rounded-lg flex flex-col justify-between relative cursor-pointer"
+            className="interest-card rounded-lg flex flex-col justify-between relative"
             style={{ height: '180px', padding: '20px' }}
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
@@ -98,9 +99,13 @@ export default function InterestCard({ title, icon, route, index }) {
                 delay: 0.3 + index * 0.1,
                 ease: [0.16, 1, 0.3, 1],
             }}
+            onMouseEnter={playSubtleHoverSound}
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
-            onClick={() => navigate(route)}
+            onClick={() => {
+                playClickSound()
+                navigate(route)
+            }}
         >
             {/* WebGL particle canvas */}
             <div className="absolute inset-0 rounded-lg overflow-hidden opacity-30 pointer-events-none">

@@ -2,6 +2,7 @@ import React, { Suspense } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Canvas } from '@react-three/fiber'
+import { playSubtleHoverSound, playClickSound } from '../utils/sounds'
 
 // Lazy-load scenes for code splitting
 const scenes = {
@@ -71,7 +72,11 @@ export default function ProjectPage() {
                                    hover:text-[var(--color-red)] transition-colors tracking-[2px] uppercase
                                    border border-[var(--color-border-dim)] hover:border-[var(--color-red)]
                                    px-4 py-2 rounded bg-transparent cursor-pointer"
-                        onClick={() => navigate('/')}
+                        onMouseEnter={playSubtleHoverSound}
+                        onClick={() => {
+                            playClickSound();
+                            navigate('/');
+                        }}
                         initial={{ opacity: 0, x: -20 }}
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: 0.3 }}
