@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import { playSubtleHoverSound, playClickSound } from '../utils/sounds'
+import { playSubtleHoverSound, playTileClickSound } from '../utils/sounds'
 
 /**
  * Mini particle system rendered inside each interest card.
@@ -103,7 +103,7 @@ export default function InterestCard({ title, icon, route, index }) {
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
             onClick={() => {
-                playClickSound()
+                playTileClickSound()
                 navigate(route)
             }}
         >

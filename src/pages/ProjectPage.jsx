@@ -2,7 +2,7 @@ import React, { Suspense } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Canvas } from '@react-three/fiber'
-import { playSubtleHoverSound, playClickSound } from '../utils/sounds'
+import { playSubtleHoverSound, playClickBeepSound } from '../utils/sounds'
 
 // Lazy-load scenes for code splitting
 const scenes = {
@@ -74,7 +74,7 @@ export default function ProjectPage() {
                                    px-4 py-2 rounded bg-transparent cursor-pointer"
                         onMouseEnter={playSubtleHoverSound}
                         onClick={() => {
-                            playClickSound();
+                            playClickBeepSound();
                             navigate('/');
                         }}
                         initial={{ opacity: 0, x: -20 }}

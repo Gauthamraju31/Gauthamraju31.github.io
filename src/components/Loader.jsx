@@ -17,7 +17,7 @@ export default function Loader({ onComplete }) {
         playHoverSound(2.5) // ~2.5 seconds to full charge
         let current = 0
         const interval = setInterval(() => {
-            current += Math.random() * 15 + 5
+            current += Math.random() * 2 + 1
             if (current >= 100) {
                 current = 100
                 clearInterval(interval)
@@ -25,7 +25,7 @@ export default function Loader({ onComplete }) {
                 setTimeout(() => onComplete(), 400) // slight delay at 100%
             }
             setProgress(current)
-        }, 80) // update every 80ms
+        }, 40) // update every 40ms -> around 2.6 seconds total
 
         return () => clearInterval(interval)
     }, [started]) // Only depend on `started` state to prevent rapid unmounting

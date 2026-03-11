@@ -3,6 +3,26 @@
 
 let audioCtx = null
 
+let isMuted = false
+
+export function toggleGlobalMute() {
+    isMuted = !isMuted
+    return isMuted
+}
+
+export function getIsMuted() {
+    return isMuted
+}
+
+import electronicClickSfx from '../../assets/audio_effects/button.wav'
+const tileClickAudio = new Audio(electronicClickSfx)
+
+import clickBeepSfx from '../../assets/audio_effects/click-and-beep.wav'
+const clickBeepAudio = new Audio(clickBeepSfx)
+
+import uiConfirmSfx from '../../assets/audio_effects/ui-confirm.wav'
+const uiConfirmAudio = new Audio(uiConfirmSfx)
+
 function getAudioContext() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)()
@@ -22,6 +42,7 @@ let chargingGain = null;
  * Used for hover interactions and loading screen.
  */
 export function playHoverSound(duration = 0.5) {
+    if (isMuted) return;
     if (typeof duration !== 'number') duration = 0.5;
     try {
         const ctx = getAudioContext()
@@ -79,6 +100,7 @@ export function stopHoverSound() {
  * Used when a tile or link is clicked.
  */
 export function playClickSound() {
+    if (isMuted) return;
     try {
         const ctx = getAudioContext()
 
@@ -137,24 +159,42 @@ export function playClickSound() {
  * Very subtle, quick high-pitch tick/flash for UI hovers
  */
 export function playSubtleHoverSound() {
+    if (isMuted) return;
     try {
-        const ctx = getAudioContext()
-        const osc = ctx.createOscillator()
-        const gain = ctx.createGain()
+        const a = uiConfirmAudio.cloneNode()
+        a.volume = 0.2 // keep it subtle
+        a.play().catch(e => console.warn("Hover audio play failed", e))
+    } catch (e) {
+        console.error("Audio error", e)
+    }
+}
 
-        // Quick, soft high "tink"
-        osc.type = 'sine'
-        osc.frequency.setValueAtTime(5000, ctx.currentTime)
-        osc.frequency.exponentialRampToValueAtTime(9000, ctx.currentTime + 0.05)
+/**
+ * Tile Click Sound (Using MP3 file)
+ * Used for the 4 interest cards.
+ */
+export function playTileClickSound() {
+    if (isMuted) return;
+    try {
+        const a = tileClickAudio.cloneNode()
+        a.volume = 0.6
+        a.play().catch(e => console.warn("Tile audio play failed", e))
+    } catch (e) {
+        console.error("Audio error", e)
+    }
+}
 
-        gain.gain.setValueAtTime(0, ctx.currentTime)
-        gain.gain.linearRampToValueAtTime(0.005, ctx.currentTime + 0.01) // Extremely quiet (0.005)
-        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.05)
-
-        osc.connect(gain)
-        gain.connect(ctx.destination)
-
-        osc.start(ctx.currentTime)
-        osc.stop(ctx.currentTime + 0.05)
-    } catch (e) { }
+/**
+ * Click and Beep Sound (Using MP3 file)
+ * Used for contacts or the back button.
+ */
+export function playClickBeepSound() {
+    if (isMuted) return;
+    try {
+        const a = clickBeepAudio.cloneNode()
+        a.volume = 0.6
+        a.play().catch(e => console.warn("Click beep audio play failed", e))
+    } catch (e) {
+        console.error("Audio error", e)
+    }
 }

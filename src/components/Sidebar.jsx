@@ -1,6 +1,6 @@
 import React from 'react'
 import { motion } from 'framer-motion'
-import { playClickSound, playSubtleHoverSound } from '../utils/sounds'
+import { playClickBeepSound, playSubtleHoverSound } from '../utils/sounds'
 
 /**
  * Sidebar — Contacts + Profile summary.
@@ -82,7 +82,7 @@ function ContactLink({ href, icon, label }) {
             target="_blank"
             rel="noopener noreferrer"
             onMouseEnter={playSubtleHoverSound}
-            onClick={playClickSound}
+            onClick={playClickBeepSound}
             className="flex items-center gap-3.5 px-4 py-2.5 border-l-2 border-[var(--color-border-dim)] hover:border-[var(--color-red)] hover:bg-[rgba(255,26,26,0.03)] transition-all duration-300 group"
         >
             <span className="text-[var(--color-text-dim)] group-hover:text-[var(--color-red)] transition-colors">
