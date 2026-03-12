@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Canvas } from '@react-three/fiber'
 import { playSubtleHoverSound, playClickBeepSound } from '../utils/sounds'
+import ErrorBoundary from '../components/ErrorBoundary'
 
 // Lazy-load scenes for code splitting
 const scenes = {
@@ -46,22 +47,34 @@ export default function ProjectPage() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
         >
-            {/* Full-screen R3F Canvas */}
-            <Canvas
-                camera={{ position: [0, 3, 8], fov: 55 }}
-                gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
-                dpr={[1, 1.5]}
-                style={{ position: 'absolute', inset: 0 }}
-            >
-                <color attach="background" args={['#050505']} />
-                <fog attach="fog" args={['#050505', 12, 40]} />
-                <ambientLight intensity={0.15} />
-                <directionalLight position={[5, 10, 5]} intensity={0.3} color="#ff4444" />
+            <ErrorBoundary>
+                {/* Specialized View Routing */}
+                {specialization === 'computer-vision' ? (
+                    <Suspense fallback={
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+                            <p className="text-[var(--color-red)] text-sm uppercase tracking-[3px] animate-pulse">Connecting to Vision System...</p>
+                        </div>
+                    }>
+                        <SceneComponent />
+                    </Suspense>
+                ) : (
+                    <Canvas
+                        camera={{ position: [0, 3, 8], fov: 55 }}
+                        gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
+                        dpr={[1, 1.5]}
+                        style={{ position: 'absolute', inset: 0 }}
+                    >
+                        <color attach="background" args={['#050505']} />
+                        <fog attach="fog" args={['#050505', 12, 40]} />
+                        <ambientLight intensity={0.15} />
+                        <directionalLight position={[5, 10, 5]} intensity={0.3} color="#ff4444" />
 
-                <Suspense fallback={null}>
-                    <SceneComponent />
-                </Suspense>
-            </Canvas>
+                        <Suspense fallback={null}>
+                            <SceneComponent />
+                        </Suspense>
+                    </Canvas>
+                )}
+            </ErrorBoundary>
 
             {/* HUD Overlay */}
             <div className="absolute inset-0 z-10 pointer-events-none flex flex-col">
@@ -85,61 +98,68 @@ export default function ProjectPage() {
                         ← Back
                     </motion.button>
 
-                    <motion.span
-                        className="text-[10px] text-[var(--color-text-dim)] tracking-[3px]"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ delay: 0.6 }}
-                    >
-                        SCENE / {specialization.toUpperCase().replace('-', '_')}
-                    </motion.span>
+                    {specialization !== 'computer-vision' && (
+                        <motion.span
+                            className="text-[10px] text-[var(--color-text-dim)] tracking-[3px]"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ delay: 0.6 }}
+                        >
+                            SCENE / {specialization.toUpperCase().replace('-', '_')}
+                        </motion.span>
+                    )}
                 </div>
 
-                {/* Center title */}
-                <div className="flex-1 flex flex-col items-center justify-center">
-                    <motion.h1
-                        className="font-[family-name:var(--font-heading)] text-4xl md:text-6xl font-bold text-white text-center text-glow-red"
-                        initial={{ opacity: 0, y: 30, scale: 0.95 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        transition={{ delay: 0.2, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-                    >
-                        {title}
-                    </motion.h1>
+                {/* Center title (Hide on active CV scene) */}
+                {specialization !== 'computer-vision' && (
+                    <div className="flex-1 flex flex-col items-center justify-center">
+                        <motion.h1
+                            className="font-[family-name:var(--font-heading)] text-4xl md:text-6xl font-bold text-white text-center text-glow-red"
+                            initial={{ opacity: 0, y: 30, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            transition={{ delay: 0.2, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+                        >
+                            {title}
+                        </motion.h1>
 
-                    {/* Red underline */}
-                    <motion.div
-                        className="mt-4 h-[2px] w-32 bg-[var(--color-red)] opacity-70"
-                        initial={{ scaleX: 0 }}
-                        animate={{ scaleX: 1 }}
-                        transition={{ delay: 0.5, duration: 0.8 }}
-                    />
+                        {/* Red underline */}
+                        <motion.div
+                            className="mt-4 h-[2px] w-32 bg-[var(--color-red)] opacity-70"
+                            initial={{ scaleX: 0 }}
+                            animate={{ scaleX: 1 }}
+                            transition={{ delay: 0.5, duration: 0.8 }}
+                        />
 
-                    <motion.p
-                        className="mt-6 text-sm text-[var(--color-text-dim)] tracking-[3px] uppercase"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ delay: 0.8 }}
-                    >
-                        Project coming soon
-                    </motion.p>
+                        <motion.p
+                            className="mt-6 text-sm text-[var(--color-text-dim)] tracking-[3px] uppercase"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ delay: 0.8 }}
+                        >
+                            Project coming soon
+                        </motion.p>
 
-                    {/* Blinking cursor */}
-                    <motion.span
-                        className="mt-2 text-[var(--color-red)] text-xs"
-                        animate={{ opacity: [1, 0, 1] }}
-                        transition={{ repeat: Infinity, duration: 1.2 }}
-                    >
-                        ▌
-                    </motion.span>
-                </div>
+                        {/* Blinking cursor */}
+                        <motion.span
+                            className="mt-2 text-[var(--color-red)] text-xs"
+                            animate={{ opacity: [1, 0, 1] }}
+                            transition={{ repeat: Infinity, duration: 1.2 }}
+                        >
+                            ▌
+                        </motion.span>
+                    </div>
+                )}
+
+                {/* Spacer — always pushes bottom indicator to true bottom */}
+                {specialization === 'computer-vision' && <div className="flex-1" />}
 
                 {/* Bottom indicator */}
                 <div className="px-6 md:px-10 pb-6 flex justify-between">
                     <span className="text-[10px] text-[var(--color-text-dim)] tracking-[2px]">
-                        WEBGL ACTIVE
+                        {specialization === 'computer-vision' ? 'WEBCAM ACTIVE' : 'WEBGL ACTIVE'}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-dim)] tracking-[2px]">
-                        60 FPS TARGET
+                        {specialization === 'computer-vision' ? 'ONNX RUNTIME' : '60 FPS TARGET'}
                     </span>
                 </div>
             </div>

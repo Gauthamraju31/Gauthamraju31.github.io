@@ -4,6 +4,7 @@ import Hero from '../components/Hero'
 import InterestCard from '../components/InterestCard'
 import Sidebar from '../components/Sidebar'
 import WebGLBackground from '../components/WebGLBackground'
+import TerminalTypewriter from '../components/TerminalTypewriter'
 
 const INTERESTS = [
     { title: 'Computer Vision', icon: '👁', route: '/projects/computer-vision' },
@@ -93,6 +94,9 @@ export default function Home() {
                                 />
                             ))}
                         </div>
+
+                        {/* Terminal typewriter — below tiles */}
+                        <TerminalTypewriter />
                     </motion.div>
 
                     {/* Right: 4 columns — Sidebar */}

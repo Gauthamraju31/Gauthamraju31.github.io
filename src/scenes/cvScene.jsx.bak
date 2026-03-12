@@ -1,0 +1,453 @@
+import React, { useRef, useState, useEffect, useCallback } from 'react'
+import { motion } from 'framer-motion'
+import { pipeline, env, RawImage } from '@huggingface/transformers'
+import { playClickBeepSound } from '../utils/sounds'
+
+// Configure Transformers.js
+env.allowLocalModels = false;
+
+const CV_MODELS = [
+    { id: 'detection', name: 'Object Detection', type: 'object-detection', modelId: 'Xenova/yolos-tiny', ready: true },
+    { id: 'segmentation', name: 'Image Segmentation', type: 'image-segmentation', modelId: 'Xenova/segformer-b0-finetuned-cityscapes-512-1024', ready: true },
+    { id: 'keypoints', name: 'Face Keypoints (WIP)', type: 'keypoints', modelId: '', ready: false },
+    { id: 'mesh', name: 'Face Mesh (WIP)', type: 'mesh', modelId: '', ready: false }
+]
+
+export default function CvWebcamScene() {
+    const videoRef = useRef(null)
+    const canvasRef = useRef(null)
+    const [stream, setStream] = useState(null)
+    const [cameraStatus, setCameraStatus] = useState('initializing') // initializing, ready, error
+    const [activeModel, setActiveModel] = useState('detection')
+    const [modelStatus, setModelStatus] = useState('idle') // idle, loading, ready, error
+    const modelStatusRef = useRef('idle') // Mirror of modelStatus for use in async loops
+    const [loadingProgress, setLoadingProgress] = useState(0)
+    const [modelErrorMsg, setModelErrorMsg] = useState('')
+    const [fps, setFps] = useState(0)
+
+    // Pipeline references
+    const detectorRef = useRef(null)
+    const isInferencing = useRef(false)
+    const latestOutput = useRef(null)
+    const renderFrameId = useRef(null)
+    const inferenceTimeoutId = useRef(null)
+    const inferenceCanvasRef = useRef(null) // Persistent offscreen canvas for capturing video frames
+
+    // 1. Initialize Webcam
+    useEffect(() => {
+        async function setupCamera() {
+            try {
+                const mediaStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+                    audio: false
+                })
+                setStream(mediaStream)
+                if (videoRef.current) {
+                    videoRef.current.srcObject = mediaStream
+                    videoRef.current.onloadedmetadata = () => {
+                        videoRef.current.play()
+                    }
+                }
+                setCameraStatus('ready')
+            } catch (err) {
+                console.error("Error accessing webcam:", err)
+                setCameraStatus('error')
+            }
+        }
+        setupCamera()
+
+        return () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop())
+            }
+            if (renderFrameId.current) cancelAnimationFrame(renderFrameId.current)
+            if (inferenceTimeoutId.current) clearTimeout(inferenceTimeoutId.current)
+        }
+    }, [])
+
+    // 2. Load Model when activeModel changes
+    useEffect(() => {
+        const loadModel = async () => {
+            const currentConfig = CV_MODELS.find(m => m.id === activeModel)
+            if (!currentConfig || !currentConfig.ready) {
+                setModelStatus('idle')
+                modelStatusRef.current = 'idle'
+                detectorRef.current = null
+                return
+            }
+
+            setModelStatus('loading')
+            modelStatusRef.current = 'loading'
+            setLoadingProgress(0)
+
+            // Force React to paint the 'loading' UI before we block the thread parsing WebGPU/WASM graphs
+            await new Promise(resolve => setTimeout(resolve, 100))
+
+            try {
+                // Use WASM (CPU) backend — WebGPU conflicts with Three.js WebGL context
+                // causing the inference promise to hang forever
+                detectorRef.current = await pipeline(currentConfig.type, currentConfig.modelId, {
+                    progress_callback: (x) => {
+                        if (x.status === 'download') setLoadingProgress(0)
+                        else if (x.status === 'progress') setLoadingProgress(x.progress)
+                        else if (x.status === 'done') setLoadingProgress(100)
+                    }
+                })
+                console.log('[CV] Model loaded successfully')
+                setModelStatus('ready')
+                modelStatusRef.current = 'ready'
+            } catch (err) {
+                console.error('Model loading failed:', err)
+                setModelStatus('error')
+                modelStatusRef.current = 'error'
+                setModelErrorMsg(err.message || 'Failed to download or compile neural network weights.')
+            }
+        }
+
+        loadModel()
+    }, [activeModel])
+
+    // 3. Render Loop (Runs at 60fps, draws latest Overlay ON TOP of the video feed)
+    const renderLoop = useCallback(() => {
+        if (!videoRef.current || !canvasRef.current || videoRef.current.readyState < 2) {
+            renderFrameId.current = requestAnimationFrame(renderLoop)
+            return
+        }
+
+        const video = videoRef.current
+        const canvas = canvasRef.current
+        const ctx = canvas.getContext('2d')
+
+        // Sync canvas internal resolution to video display size
+        const displayW = video.clientWidth
+        const displayH = video.clientHeight
+        if (canvas.width !== displayW || canvas.height !== displayH) {
+            canvas.width = displayW
+            canvas.height = displayH
+        }
+
+        // Clear previous overlay
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+        // Draw the latest inference overlay if available
+        const output = latestOutput.current
+        if (output && output.length > 0) {
+            // Calculate the actual video display area within the container
+            // (object-contain causes letterboxing — black bars on sides)
+            const videoAspect = video.videoWidth / video.videoHeight
+            const canvasAspect = canvas.width / canvas.height
+            let renderW, renderH, offsetX, offsetY
+
+            if (videoAspect > canvasAspect) {
+                // Video is wider than container → horizontal fit, vertical bars
+                renderW = canvas.width
+                renderH = canvas.width / videoAspect
+                offsetX = 0
+                offsetY = (canvas.height - renderH) / 2
+            } else {
+                // Video is taller than container → vertical fit, horizontal bars
+                renderH = canvas.height
+                renderW = canvas.height * videoAspect
+                offsetX = (canvas.width - renderW) / 2
+                offsetY = 0
+            }
+
+            if (activeModel === 'detection') {
+                output.forEach(det => {
+                    if (!det || !det.box) return
+
+                    // Map 0-1 normalized coords to the actual video display area
+                    const { xmin, ymin, xmax, ymax } = det.box
+
+                    const x = offsetX + xmin * renderW
+                    const y = offsetY + ymin * renderH
+                    const w = (xmax - xmin) * renderW
+                    const h = (ymax - ymin) * renderH
+
+                    // Sci-fi Box
+                    ctx.strokeStyle = '#ff1a1a'
+                    ctx.lineWidth = 2
+                    ctx.strokeRect(x, y, w, h)
+
+                    // Label background
+                    const labelText = `${det.label} (${Math.round(det.score * 100)}%)`
+                    ctx.fillStyle = 'rgba(255, 26, 26, 0.8)'
+                    ctx.fillRect(x, y - 20, ctx.measureText(labelText).width + 10, 20)
+                    ctx.fillStyle = '#ffffff'
+                    ctx.font = '12px Courier New'
+                    ctx.fillText(labelText, x + 4, y - 6)
+
+                    // Corner accents
+                    const cL = 10
+                    ctx.lineWidth = 4
+                    ctx.beginPath()
+                    ctx.moveTo(x, y + cL); ctx.lineTo(x, y); ctx.lineTo(x + cL, y)
+                    ctx.moveTo(x + w - cL, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cL)
+                    ctx.moveTo(x, y + h - cL); ctx.lineTo(x, y + h); ctx.lineTo(x + cL, y + h)
+                    ctx.moveTo(x + w - cL, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cL)
+                    ctx.stroke()
+                })
+            } else if (activeModel === 'segmentation') {
+                try {
+                    const overlayCanvas = document.createElement('canvas')
+                    overlayCanvas.width = canvas.width
+                    overlayCanvas.height = canvas.height
+                    const overlayCtx = overlayCanvas.getContext('2d')
+
+                    output.forEach(seg => {
+                        if (seg.label === 'person') {
+                            const maskCanvas = seg.mask.toCanvas()
+                            overlayCtx.globalCompositeOperation = 'source-over'
+                            overlayCtx.fillStyle = 'rgba(255, 26, 26, 0.4)'
+                            overlayCtx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height)
+                            overlayCtx.globalCompositeOperation = 'destination-in'
+                            overlayCtx.drawImage(maskCanvas, 0, 0, overlayCanvas.width, overlayCanvas.height)
+                            ctx.drawImage(overlayCanvas, 0, 0)
+                        }
+                    })
+                } catch (e) {
+                    // ignore mask errors mid-render
+                }
+            }
+        }
+
+        renderFrameId.current = requestAnimationFrame(renderLoop)
+    }, [activeModel])
+
+    // 4. Inference Loop (Runs asynchronously, as fast as the model allows)
+    // NOTE: We use modelStatusRef instead of modelStatus to avoid stale closure issues
+    // with setTimeout self-referencing. The useCallback would capture the initial 'idle'
+    // value and never see 'ready' because setTimeout(runInference, ...) perpetuates
+    // the old closure.
+    const runInference = useCallback(async () => {
+        // Diagnostic: log every guard condition so we can trace what blocks inference
+        const hasVideo = !!videoRef.current
+        const hasDetector = !!detectorRef.current
+        const status = modelStatusRef.current
+        const readyState = videoRef.current ? videoRef.current.readyState : -1
+        const busy = isInferencing.current
+
+        if (!hasVideo || !hasDetector || status !== 'ready') {
+            // Log once every ~5 seconds (every 25th call at 200ms interval)
+            if (Math.random() < 0.04) {
+                console.log(`[CV] Guard BLOCKED: video=${hasVideo}, detector=${hasDetector}, status=${status}, readyState=${readyState}`)
+            }
+            inferenceTimeoutId.current = setTimeout(runInference, 200)
+            return
+        }
+
+        if (busy || readyState < 2) {
+            inferenceTimeoutId.current = setTimeout(runInference, 50)
+            return
+        }
+
+        console.log('[CV] Inference loop ENTERED — running detection...')
+
+        isInferencing.current = true
+        const start = performance.now()
+
+        try {
+            // Capture video frame to an offscreen canvas
+            const video = videoRef.current
+            if (!inferenceCanvasRef.current) {
+                inferenceCanvasRef.current = document.createElement('canvas')
+            }
+            const offCanvas = inferenceCanvasRef.current
+            offCanvas.width = video.videoWidth
+            offCanvas.height = video.videoHeight
+            const offCtx = offCanvas.getContext('2d')
+            offCtx.drawImage(video, 0, 0)
+
+            // Convert canvas to blob URL (avoids RawImage.fromCanvas deadlock with WebGPU)
+            const blob = await new Promise(resolve => offCanvas.toBlob(resolve, 'image/jpeg', 0.8))
+            const blobUrl = URL.createObjectURL(blob)
+
+            // Wrap inference in a timeout to prevent permanent hangs
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Inference timed out after 30s')), 30000)
+            )
+
+            let result
+            if (activeModel === 'detection') {
+                result = await Promise.race([
+                    detectorRef.current(blobUrl, { threshold: 0.5, percentage: true }),
+                    timeoutPromise
+                ])
+                console.log('[CV] Detection result:', JSON.stringify(result))
+                latestOutput.current = result
+            } else if (activeModel === 'segmentation') {
+                result = await Promise.race([
+                    detectorRef.current(blobUrl),
+                    timeoutPromise
+                ])
+                latestOutput.current = result
+            }
+
+            // Clean up blob URL
+            URL.revokeObjectURL(blobUrl)
+        } catch (e) {
+            console.error('[CV] Inference execution error:', e)
+        }
+
+        const end = performance.now()
+        const inferFps = Math.round(1000 / (end - start))
+        setFps(inferFps)
+        isInferencing.current = false
+
+        // Schedule next inference
+        inferenceTimeoutId.current = setTimeout(runInference, 0)
+    }, [activeModel]) // NOTE: modelStatus removed from deps — we use the ref instead
+
+    // Mount loops
+    useEffect(() => {
+        renderFrameId.current = requestAnimationFrame(renderLoop)
+        inferenceTimeoutId.current = setTimeout(runInference, 100)
+
+        return () => {
+            if (renderFrameId.current) cancelAnimationFrame(renderFrameId.current)
+            if (inferenceTimeoutId.current) clearTimeout(inferenceTimeoutId.current)
+        }
+    }, [renderLoop, runInference])
+
+    return (
+        <div className="absolute inset-0 flex mt-20 p-6 md:p-12 gap-8 pointer-events-auto">
+
+            {/* Main Viewport */}
+            <div className="flex-1 relative border border-[var(--color-border-dim)] rounded-lg overflow-hidden bg-black flex items-center justify-center shadow-[0_0_30px_rgba(255,26,26,0.1)] group">
+                {/* Visible raw video */}
+                <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-contain opacity-90 transition-opacity duration-300 group-hover:opacity-100"
+                />
+
+                {/* Processed transparent output canvas overlay */}
+                <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 pointer-events-none"
+                />
+
+                {/* Camera States */}
+                {cameraStatus === 'initializing' && (
+                    <div className="absolute inset-0 flex items-center justify-center flex-col gap-4 bg-black/50 backdrop-blur-sm z-10 transition-opacity">
+                        <div className="w-8 h-8 rounded-full border-t-2 border-[var(--color-red)] animate-spin" />
+                        <p className="text-[var(--color-text-dim)] font-[family-name:var(--font-mono)] text-xs tracking-widest uppercase">Connecting to Camera...</p>
+                    </div>
+                )}
+
+                {cameraStatus === 'error' && (
+                    <div className="absolute inset-0 flex items-center justify-center flex-col gap-4 bg-black/90 backdrop-blur-md z-20">
+                        <p className="text-[var(--color-red)] font-[family-name:var(--font-mono)] text-sm tracking-widest uppercase animate-pulse">Camera Access Denied</p>
+                        <p className="text-[var(--color-text-dim)] font-[family-name:var(--font-mono)] text-xs max-w-sm text-center">Please allow camera permissions in your browser to interact with this module.</p>
+                    </div>
+                )}
+
+                {/* Model States */}
+                {modelStatus === 'error' && cameraStatus === 'ready' && (
+                    <div className="absolute inset-0 flex items-center justify-center flex-col gap-6 bg-black/80 backdrop-blur-sm z-10 px-12 text-center">
+                        <p className="text-[var(--color-red)] font-[family-name:var(--font-mono)] text-sm tracking-widest uppercase animate-pulse">Neural Initialization Failed</p>
+                        <div className="border border-[var(--color-red)]/30 bg-[rgba(255,26,26,0.05)] p-4 rounded max-w-lg overflow-auto">
+                            <p className="text-[var(--color-red)] font-[family-name:var(--font-mono)] text-[10px] whitespace-pre-wrap text-left break-words">
+                                ERROR LOG: {modelErrorMsg}
+                            </p>
+                        </div>
+                        <p className="text-[var(--color-text-dim)] font-[family-name:var(--font-mono)] text-[10px] tracking-wider">Try selecting a different model or clearing browser cache.</p>
+                    </div>
+                )}
+
+                {modelStatus === 'loading' && (
+                    <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-10 px-12">
+                        <p className="text-[var(--color-red)] font-[family-name:var(--font-mono)] text-sm tracking-widest uppercase mb-6 animate-pulse">
+                            Downloading Neural Weights
+                        </p>
+                        <div className="w-full max-w-md h-1 bg-gray-900 rounded-full overflow-hidden relative">
+                            <motion.div
+                                className="h-full bg-[var(--color-red)] origin-left shadow-[0_0_10px_#ff1a1a]"
+                                initial={{ scaleX: 0 }}
+                                animate={{ scaleX: loadingProgress / 100 }}
+                                transition={{ ease: "linear", duration: 0.1 }}
+                            />
+                        </div>
+                        <p className="text-[var(--color-text-dim)] font-[family-name:var(--font-mono)] text-[10px] tracking-widest uppercase mt-4">
+                            {Math.round(loadingProgress)}% / TARGET: ONNX WebGPU
+                        </p>
+                    </div>
+                )}
+
+                {/* HUD Elements */}
+                <div className="absolute top-4 left-4 border border-[var(--color-red)]/30 bg-black/50 px-3 py-1.5 rounded backdrop-blur text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-red)] tracking-widest uppercase pointer-events-none">
+                    REC <span className="inline-block w-2 h-2 bg-[var(--color-red)] rounded-full ml-2 animate-pulse" />
+                </div>
+                {modelStatus === 'ready' && fps > 0 && (
+                    <div className="absolute top-4 right-4 border border-[var(--color-border-dim)] bg-black/50 px-3 py-1.5 rounded backdrop-blur text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-dim)] tracking-widest uppercase pointer-events-none">
+                        INFERENCE: {fps} FPS
+                    </div>
+                )}
+                <div className="absolute bottom-4 left-4 border-l border-b border-[var(--color-red)]/50 w-8 h-8 pointer-events-none" />
+                <div className="absolute bottom-4 right-4 border-r border-b border-[var(--color-red)]/50 w-8 h-8 pointer-events-none" />
+                <div className="absolute top-4 left-4 border-l border-t border-[var(--color-red)]/50 w-8 h-8 pointer-events-none" />
+                <div className="absolute top-4 right-4 border-r border-t border-[var(--color-red)]/50 w-8 h-8 pointer-events-none" />
+            </div>
+
+            {/* Sidebar Controls */}
+            <div className="w-64 flex flex-col gap-6 z-0 mt-8">
+                <div>
+                    <h2 className="text-[12px] tracking-[3px] uppercase text-[var(--color-red)] mb-4 font-[family-name:var(--font-heading)]">
+                        Model Configuration
+                    </h2>
+                    <p className="text-[11px] text-[var(--color-text-dim)] tracking-wide font-[family-name:var(--font-mono)] leading-relaxed">
+                        Execute machine learning models locally using WebGPU and ONNX Runtime. No data leaves your browser.
+                    </p>
+                </div>
+
+                <div className="flex flex-col gap-3">
+                    {CV_MODELS.map((model) => (
+                        <button
+                            key={model.id}
+                            disabled={!model.ready}
+                            onClick={() => {
+                                if (model.ready && activeModel !== model.id) {
+                                    playClickBeepSound()
+                                    setActiveModel(model.id)
+                                }
+                            }}
+                            className={`
+                                flex flex-col text-left px-4 py-3 border rounded transition-all duration-300 font-[family-name:var(--font-mono)]
+                                ${!model.ready ? 'opacity-30 cursor-not-allowed border-gray-900 bg-transparent' :
+                                    activeModel === model.id
+                                        ? 'border-[var(--color-red)] bg-[rgba(255,26,26,0.05)] shadow-[inset_0_0_15px_rgba(255,26,26,0.1)]'
+                                        : 'border-[var(--color-border-dim)] hover:border-[var(--color-red)] hover:bg-[rgba(255,26,26,0.02)] cursor-pointer'
+                                }
+                            `}
+                        >
+                            <span className={`text-xs tracking-wider uppercase ${activeModel === model.id ? 'text-white' : 'text-[var(--color-text-dim)]'}`}>
+                                {model.name}
+                            </span>
+                            <span className={`text-[9px] tracking-widest mt-1 ${activeModel === model.id ? 'text-[var(--color-red)]' : 'text-gray-600'}`}>
+                                {model.ready ? `TGL -> ${model.id.toUpperCase()}` : 'OFFLINE'}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+
+                {/* Info block */}
+                <div className="mt-auto border-t border-[var(--color-border-dim)] pt-6">
+                    <div className="flex items-center gap-2 mb-2">
+                        <span className="w-1.5 h-1.5 bg-[var(--color-text-dim)] rounded-full animate-ping" />
+                        <span className="text-[10px] text-[var(--color-text-dim)] tracking-[2px] uppercase font-[family-name:var(--font-mono)]">System Load</span>
+                    </div>
+                    <div className="h-1 w-full bg-gray-900 rounded-full overflow-hidden">
+                        {/* Dynamic system load bar representing intensity based on FPS */}
+                        <div
+                            className="h-full bg-[var(--color-text-dim)] transition-all duration-300 ease-in-out"
+                            style={{ width: `${modelStatus === 'ready' && fps > 0 ? (fps > 20 ? 40 : fps > 10 ? 70 : 95) : 0}%` }}
+                        />
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    )
+}
