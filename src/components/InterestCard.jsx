@@ -1,6 +1,6 @@
-import React, { useRef, useCallback } from 'react'
+import React, { useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, useMotionValue, useSpring, useTransform } from 'framer-motion'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { playSubtleHoverSound, playTileClickSound } from '../utils/sounds'
@@ -64,34 +64,58 @@ export default function InterestCard({ title, icon, route, index }) {
     const navigate = useNavigate()
     const cardRef = useRef(null)
 
-    const handleMouseMove = useCallback((e) => {
+    // Motion values for smooth 3D tilt
+    const x = useMotionValue(0)
+    const y = useMotionValue(0)
+    const hover = useMotionValue(0)
+
+    // Spring physics configuration for "buttery smooth" movement
+    const springConfig = { damping: 20, stiffness: 150, mass: 0.5 }
+    const xSpring = useSpring(x, springConfig)
+    const ySpring = useSpring(y, springConfig)
+    const hoverSpring = useSpring(hover, springConfig)
+
+    // Map spring positions to rotation and scale
+    const rotateX = useTransform(ySpring, [-0.5, 0.5], [10, -10])
+    const rotateY = useTransform(xSpring, [-0.5, 0.5], [-10, 10])
+    const scale = useTransform(hoverSpring, [0, 1], [1, 1.05])
+
+    const handleMouseMove = (e) => {
         const card = cardRef.current
         if (!card) return
         const rect = card.getBoundingClientRect()
-        const x = e.clientX - rect.left
-        const y = e.clientY - rect.top
 
-        card.style.setProperty('--mouse-x', `${x}px`)
-        card.style.setProperty('--mouse-y', `${y}px`)
+        // Calculate normalized mouse position (-0.5 to 0.5)
+        const mouseX = (e.clientX - rect.left) / rect.width
+        const mouseY = (e.clientY - rect.top) / rect.height
 
-        const centerX = rect.width / 2
-        const centerY = rect.height / 2
-        const rotateX = ((y - centerY) / centerY) * -6
-        const rotateY = ((x - centerX) / centerX) * 6
-        card.style.transform = `perspective(800px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale(1.02)`
-    }, [])
+        x.set(mouseX - 0.5)
+        y.set(mouseY - 0.5)
+        hover.set(1)
 
-    const handleMouseLeave = useCallback(() => {
-        const card = cardRef.current
-        if (!card) return
-        card.style.transform = 'perspective(800px) rotateX(0deg) rotateY(0deg) scale(1)'
-    }, [])
+        // Still update CSS variables for the spotlight glow effect
+        card.style.setProperty('--mouse-x', `${e.clientX - rect.left}px`)
+        card.style.setProperty('--mouse-y', `${e.clientY - rect.top}px`)
+    }
+
+    const handleMouseLeave = () => {
+        x.set(0)
+        y.set(0)
+        hover.set(0)
+    }
 
     return (
         <motion.div
             ref={cardRef}
             className="interest-card rounded-lg flex flex-col justify-between relative"
-            style={{ height: '180px', padding: '20px' }}
+            style={{
+                height: '180px',
+                padding: '20px',
+                rotateX,
+                rotateY,
+                scale,
+                transformPerspective: 1000
+            }}
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{
