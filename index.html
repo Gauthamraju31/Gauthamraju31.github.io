@@ -7,6 +7,23 @@
     <meta name="description"
         content="Gautham Raju — Associate Computer Vision Manager. Interactive portfolio exploring computer vision, robotics, drones, embedded systems, and AI." />
     <title>Gautham Raju — CV Engineer</title>
+    <!-- Register coi-serviceworker on GitHub Pages (where server headers can't be set).
+         On Firebase, crossOriginIsolated is already true thanks to firebase.json headers,
+         so this block is completely skipped there. -->
+    <script>
+        if (!crossOriginIsolated && 'serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/coi-serviceworker.js').then(reg => {
+                if (!reg.active) {
+                    reg.addEventListener('updatefound', () => {
+                        reg.installing.addEventListener('statechange', e => {
+                            if (e.target.state === 'activated') location.reload()
+                        })
+                    })
+                }
+            })
+        }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

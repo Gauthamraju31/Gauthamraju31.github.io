@@ -28,8 +28,9 @@ const IOU_THRESHOLD = 0.5
 // Point ONNX Runtime to CDN-hosted WASM binaries (Vite can't serve them from node_modules)
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/'
 
-// Use 4 threads for WASM inference
-ort.env.wasm.numThreads = 4
+// Use 4 threads when SharedArrayBuffer is available (Firebase / cross-origin-isolated),
+// otherwise fall back to single-threaded mode (GitHub Pages).
+ort.env.wasm.numThreads = typeof SharedArrayBuffer !== 'undefined' ? 4 : 1
 
 // Pre-allocate the NCHW float buffer once — reused every frame to avoid GC pressure
 const _PIXEL_COUNT = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE
