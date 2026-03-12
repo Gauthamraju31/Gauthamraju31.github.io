@@ -1,6 +1,8 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import * as ort from 'onnxruntime-web'
+import * as THREE from 'three'
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import { playClickBeepSound } from '../utils/sounds'
 
 // ─── COCO 80-class labels ────────────────────────────────────────────────────
@@ -138,10 +140,18 @@ export default function CvWebcamScene() {
     const [fps, setFps] = useState(0)
     const [activeModel, setActiveModel] = useState('detection')
 
+    // Object Detection Refs
     const sessionRef = useRef(null)
     const streamRef = useRef(null)          // ref so cleanup always has the live stream
     const isInferencing = useRef(false)
     const latestOutput = useRef(null)
+
+    // Face Mesh Refs
+    const faceLandmarkerRef = useRef(null)
+    const webglCanvasRef = useRef(null)
+    const threeSceneRef = useRef(null)
+    const latestFaceLandmarks = useRef(null)
+
     const renderFrameId = useRef(null)
     const inferenceTimeoutId = useRef(null)
     const inferenceCanvasRef = useRef(null)
@@ -150,7 +160,7 @@ export default function CvWebcamScene() {
         { id: 'detection', name: 'Object Detection', ready: true },
         { id: 'segmentation', name: 'Image Segmentation', ready: false },
         { id: 'keypoints', name: 'Face Keypoints (WIP)', ready: false },
-        { id: 'mesh', name: 'Face Mesh (WIP)', ready: false }
+        { id: 'mesh', name: 'Face Mesh', ready: true }
     ]
 
     // ─── 1. Initialize Webcam ────────────────────────────────────────────
@@ -183,6 +193,52 @@ export default function CvWebcamScene() {
             }
             if (renderFrameId.current) cancelAnimationFrame(renderFrameId.current)
             if (inferenceTimeoutId.current) clearTimeout(inferenceTimeoutId.current)
+            if (threeSceneRef.current && threeSceneRef.current.renderer) {
+                threeSceneRef.current.renderer.dispose()
+            }
+        }
+    }, [])
+
+    // ─── 1.5 Setup Three.js for Face Mesh Overlay ─────────────────────────
+    useEffect(() => {
+        if (!webglCanvasRef.current) return
+
+        const canvas = webglCanvasRef.current
+        const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
+        renderer.setClearColor(0x000000, 0) // Ensure clear() results in transparent canvas
+
+        // Use OrthographicCamera perfectly matching canvas pixels for 1:1 overlay
+        // left=0, right=width, top=0, bottom=height so Y=0 is the top edge
+        const camera = new THREE.OrthographicCamera(0, canvas.width, 0, canvas.height, 0.1, 1000)
+        camera.position.z = 100
+
+        const scene = new THREE.Scene()
+
+        // Max 478 points in mediapipe face mesh
+        const geometry = new THREE.BufferGeometry()
+        const positions = new Float32Array(478 * 3)
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+
+        // Define wireframe material
+        const material = new THREE.LineBasicMaterial({
+            color: 0xff1a1a,
+            transparent: true,
+            opacity: 0.8,
+            depthTest: false,
+            blending: THREE.AdditiveBlending
+        })
+
+        const mesh = new THREE.LineSegments(geometry, material)
+        // Note: we'll populate the index array dynamically when we have the actual TESSELATION data from mediapipe
+        mesh.visible = false
+        scene.add(mesh)
+
+        threeSceneRef.current = { renderer, camera, scene, mesh, geometry }
+
+        return () => {
+            geometry.dispose()
+            material.dispose()
+            renderer.dispose()
         }
     }, [])
 
@@ -255,90 +311,244 @@ export default function CvWebcamScene() {
         }
 
         loadModel()
+
+        // Cleanup ONNX session on unmount or model switch
+        return () => {
+            if (sessionRef.current) {
+                try {
+                    sessionRef.current.release()
+                } catch (e) {
+                    console.error('Error releasing ONNX session', e)
+                }
+                sessionRef.current = null
+            }
+        }
+    }, [activeModel])
+
+    // ─── 2.5 Load MediaPipe FaceLandmarker ───────────────────────────────
+    useEffect(() => {
+        if (activeModel !== 'mesh') {
+            if (threeSceneRef.current) threeSceneRef.current.mesh.visible = false
+            return
+        }
+
+        const loadModel = async () => {
+            setModelStatus('loading')
+            modelStatusRef.current = 'loading'
+            setLoadingProgress(0)
+
+            try {
+                console.log('[CV] Downloading MediaPipe Face Mesh model...')
+
+                // Simulate progress since wasm loading isn't perfectly trackable
+                const progressInterval = setInterval(() => {
+                    setLoadingProgress(p => Math.min(p + 15, 90))
+                }, 100)
+
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm"
+                )
+
+                faceLandmarkerRef.current = await FaceLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                        delegate: "CPU"
+                    },
+                    outputFaceBlendshapes: false,
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                })
+
+                clearInterval(progressInterval)
+
+                // Initialize the ThreeJS Index buffer with the connection mapping
+                if (threeSceneRef.current && threeSceneRef.current.geometry) {
+                    const connections = FaceLandmarker.FACE_LANDMARKS_TESSELATION
+                    const indices = []
+                    connections.forEach(conn => {
+                        indices.push(conn.start, conn.end)
+                    })
+                    threeSceneRef.current.geometry.setIndex(indices)
+                }
+
+                console.log('[CV] Face Landmarker Session created.')
+                setModelStatus('ready')
+                modelStatusRef.current = 'ready'
+                setLoadingProgress(100)
+            } catch (err) {
+                console.error('[CV] MediaPipe loading failed:', err)
+                setModelStatus('error')
+                modelStatusRef.current = 'error'
+                setModelErrorMsg(err.message || 'Failed to load MediaPipe model.')
+            }
+        }
+
+        loadModel()
+
+        // Cleanup MediaPipe allocated memory and contexts on unmount or model switch
+        return () => {
+            if (faceLandmarkerRef.current) {
+                try {
+                    faceLandmarkerRef.current.close()
+                } catch (e) {
+                    console.error('Error closing FaceLandmarker', e)
+                }
+                faceLandmarkerRef.current = null
+            }
+        }
     }, [activeModel])
 
     // ─── 3. Render Loop — Draws overlay on top of video ──────────────────
     const renderLoop = useCallback(() => {
-        if (!videoRef.current || !canvasRef.current || videoRef.current.readyState < 2) {
+        if (!videoRef.current || videoRef.current.readyState < 2) {
             renderFrameId.current = requestAnimationFrame(renderLoop)
             return
         }
 
         const video = videoRef.current
         const canvas = canvasRef.current
-        const ctx = canvas.getContext('2d')
+        const glCanvas = webglCanvasRef.current
+        const ctx = canvas ? canvas.getContext('2d') : null
+        const threeScene = threeSceneRef.current // We always need to clear it just in case
 
         // Sync canvas resolution to video display size
         const displayW = video.clientWidth
         const displayH = video.clientHeight
-        if (canvas.width !== displayW || canvas.height !== displayH) {
+
+        if (canvas && (canvas.width !== displayW || canvas.height !== displayH)) {
             canvas.width = displayW
             canvas.height = displayH
         }
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        if (glCanvas && (glCanvas.width !== displayW || glCanvas.height !== displayH)) {
+            glCanvas.width = displayW
+            glCanvas.height = displayH
 
-        const output = latestOutput.current
-        if (output && output.length > 0) {
-            // Calculate actual video display area (object-contain letterboxing)
-            const videoAspect = video.videoWidth / video.videoHeight
-            const canvasAspect = canvas.width / canvas.height
-            let renderW, renderH, offsetX, offsetY
-
-            if (videoAspect > canvasAspect) {
-                renderW = canvas.width
-                renderH = canvas.width / videoAspect
-                offsetX = 0
-                offsetY = (canvas.height - renderH) / 2
-            } else {
-                renderH = canvas.height
-                renderW = canvas.height * videoAspect
-                offsetX = (canvas.width - renderW) / 2
-                offsetY = 0
+            if (threeScene) {
+                threeScene.renderer.setSize(displayW, displayH, false)
+                // When resizing orthographic camera, update bounds
+                threeScene.camera.right = displayW
+                threeScene.camera.top = 0
+                threeScene.camera.bottom = displayH
+                threeScene.camera.updateProjectionMatrix()
             }
 
-            output.forEach(det => {
-                if (!det || !det.box) return
-                const { xmin, ymin, xmax, ymax } = det.box
+            // Force a re-render on resize to ensure mesh appears immediately if active
+            if (activeModel === 'mesh' && threeScene) {
+                threeScene.renderer.render(threeScene.scene, threeScene.camera)
+            }
+        }
 
-                const x = offsetX + xmin * renderW
-                const y = offsetY + ymin * renderH
-                const w = (xmax - xmin) * renderW
-                const h = (ymax - ymin) * renderH
+        // Calculate actual video display area (object-contain letterboxing)
+        const videoAspect = video.videoWidth / video.videoHeight
+        const canvasAspect = canvas.width / canvas.height
+        let renderW, renderH, offsetX, offsetY
 
-                // Sci-fi red bounding box
-                ctx.strokeStyle = '#ff1a1a'
-                ctx.lineWidth = 2
-                ctx.strokeRect(x, y, w, h)
+        if (videoAspect > canvasAspect) {
+            renderW = canvas.width
+            renderH = canvas.width / videoAspect
+            offsetX = 0
+            offsetY = (canvas.height - renderH) / 2
+        } else {
+            renderH = canvas.height
+            renderW = canvas.height * videoAspect
+            offsetX = (canvas.width - renderW) / 2
+            offsetY = 0
+        }
 
-                // Label
-                const labelText = `${det.label} (${Math.round(det.score * 100)}%)`
-                ctx.font = '12px Courier New'
-                const textW = ctx.measureText(labelText).width + 10
-                ctx.fillStyle = 'rgba(255, 26, 26, 0.85)'
-                ctx.fillRect(x, y - 20, textW, 20)
-                ctx.fillStyle = '#ffffff'
-                ctx.fillText(labelText, x + 4, y - 6)
+        // --- 1. Handle 2D Canvas (Detection) ---
+        if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-                // Corner accents
-                const cL = 10
-                ctx.lineWidth = 3
-                ctx.strokeStyle = '#ff1a1a'
-                ctx.beginPath()
-                ctx.moveTo(x, y + cL); ctx.lineTo(x, y); ctx.lineTo(x + cL, y)
-                ctx.moveTo(x + w - cL, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cL)
-                ctx.moveTo(x, y + h - cL); ctx.lineTo(x, y + h); ctx.lineTo(x + cL, y + h)
-                ctx.moveTo(x + w - cL, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cL)
-                ctx.stroke()
-            })
+            if (activeModel === 'detection') {
+                const output = latestOutput.current
+                if (output && output.length > 0) {
+                    output.forEach(det => {
+                        if (!det || !det.box) return
+                        const { xmin, ymin, xmax, ymax } = det.box
+
+                        const x = offsetX + xmin * renderW
+                        const y = offsetY + ymin * renderH
+                        const w = (xmax - xmin) * renderW
+                        const h = (ymax - ymin) * renderH
+
+                        // Sci-fi red bounding box
+                        ctx.strokeStyle = '#ff1a1a'
+                        ctx.lineWidth = 2
+                        ctx.strokeRect(x, y, w, h)
+
+                        // Label
+                        const labelText = `${det.label} (${Math.round(det.score * 100)}%)`
+                        ctx.font = '12px Courier New'
+                        const textW = ctx.measureText(labelText).width + 10
+                        ctx.fillStyle = 'rgba(255, 26, 26, 0.85)'
+                        ctx.fillRect(x, y - 20, textW, 20)
+                        ctx.fillStyle = '#ffffff'
+                        ctx.fillText(labelText, x + 4, y - 6)
+
+                        // Corner accents
+                        const cL = 10
+                        ctx.lineWidth = 3
+                        ctx.strokeStyle = '#ff1a1a'
+                        ctx.beginPath()
+                        ctx.moveTo(x, y + cL); ctx.lineTo(x, y); ctx.lineTo(x + cL, y)
+                        ctx.moveTo(x + w - cL, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cL)
+                        ctx.moveTo(x, y + h - cL); ctx.lineTo(x, y + h); ctx.lineTo(x + cL, y + h)
+                        ctx.moveTo(x + w - cL, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cL)
+                        ctx.stroke()
+                    })
+                }
+            }
+        }
+
+        // --- 2. Handle 3D Canvas (Mesh) ---
+        if (threeScene) {
+            // Always clear the webgl canvas so it doesn't leave ghosts when switching models
+            threeScene.renderer.clear()
+
+            if (activeModel === 'mesh') {
+                const result = latestFaceLandmarks.current
+
+                if (result && result.faceLandmarks && result.faceLandmarks.length > 0) {
+                    const landmarks = result.faceLandmarks[0]
+                    const positions = threeScene.geometry.attributes.position.array
+
+                    // Map MediaPipe normalized coords (0-1) to our display pixel coords
+                    for (let i = 0; i < landmarks.length; i++) {
+                        const lm = landmarks[i]
+                        // MediaPipe output is perfectly normalized relative to the actual video source
+                        // which has been scaled to renderW x renderH and offset by offsetX/Y
+                        positions[i * 3] = offsetX + (lm.x * renderW)
+                        positions[i * 3 + 1] = offsetY + (lm.y * renderH)
+                        positions[i * 3 + 2] = lm.z * renderW * -1
+                    }
+
+                    threeScene.geometry.attributes.position.needsUpdate = true
+                    threeScene.mesh.visible = true
+
+                    threeScene.renderer.render(threeScene.scene, threeScene.camera)
+                } else {
+                    threeScene.mesh.visible = false
+                }
+            }
         }
 
         renderFrameId.current = requestAnimationFrame(renderLoop)
-    }, [])
+    }, [activeModel])
 
     // ─── 4. Inference Loop — Runs ONNX model on video frames ─────────────
     const runInference = useCallback(async () => {
-        if (!videoRef.current || !sessionRef.current || modelStatusRef.current !== 'ready') {
+        if (!videoRef.current || modelStatusRef.current !== 'ready') {
+            inferenceTimeoutId.current = setTimeout(runInference, 200)
+            return
+        }
+
+        // Wait for respective model engine
+        if (activeModel === 'detection' && !sessionRef.current) {
+            inferenceTimeoutId.current = setTimeout(runInference, 200)
+            return
+        }
+        if (activeModel === 'mesh' && !faceLandmarkerRef.current) {
             inferenceTimeoutId.current = setTimeout(runInference, 200)
             return
         }
@@ -354,37 +564,46 @@ export default function CvWebcamScene() {
         try {
             const video = videoRef.current
 
-            // Capture video frame to offscreen canvas at model input size
-            if (!inferenceCanvasRef.current) {
-                inferenceCanvasRef.current = document.createElement('canvas')
-                inferenceCanvasRef.current.width = MODEL_INPUT_SIZE
-                inferenceCanvasRef.current.height = MODEL_INPUT_SIZE
-            }
-            const offCanvas = inferenceCanvasRef.current
-            const offCtx = offCanvas.getContext('2d', { willReadFrequently: true })
-            offCtx.drawImage(video, 0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
+            if (activeModel === 'detection') {
+                // Capture video frame to offscreen canvas at model input size
+                if (!inferenceCanvasRef.current) {
+                    inferenceCanvasRef.current = document.createElement('canvas')
+                    inferenceCanvasRef.current.width = MODEL_INPUT_SIZE
+                    inferenceCanvasRef.current.height = MODEL_INPUT_SIZE
+                }
+                const offCanvas = inferenceCanvasRef.current
+                const offCtx = offCanvas.getContext('2d', { willReadFrequently: true })
+                offCtx.drawImage(video, 0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
 
-            // Pre-process into NCHW Float32 tensor
-            const inputTensor = preprocessFrame(offCanvas)
+                // Pre-process into NCHW Float32 tensor
+                const inputTensor = preprocessFrame(offCanvas)
 
-            // Run ONNX inference
-            const inputName = sessionRef.current.inputNames[0]
-            const feeds = { [inputName]: inputTensor }
-            const results = await sessionRef.current.run(feeds)
+                // Run ONNX inference
+                const inputName = sessionRef.current.inputNames[0]
+                const feeds = { [inputName]: inputTensor }
+                const results = await sessionRef.current.run(feeds)
 
-            // Get output tensor
-            const outputName = sessionRef.current.outputNames[0]
-            const outputTensor = results[outputName]
+                // Get output tensor
+                const outputName = sessionRef.current.outputNames[0]
+                const outputTensor = results[outputName]
 
-            // Post-process: decode boxes + NMS
-            const detections = postprocessOutput(outputTensor, video.videoWidth, video.videoHeight)
-            latestOutput.current = detections
+                // Post-process: decode boxes + NMS
+                const detections = postprocessOutput(outputTensor, video.videoWidth, video.videoHeight)
+                latestOutput.current = detections
 
-            if (detections.length > 0) {
-                console.log(`[CV] Detected ${detections.length} objects:`, detections.map(d => `${d.label}(${Math.round(d.score * 100)}%)`).join(', '))
+                // Clear any lingering face mesh data
+                latestFaceLandmarks.current = null
+            } else if (activeModel === 'mesh') {
+                const startTimeMs = performance.now()
+                // Process video feed directly — MediaPipe handles WebGL extraction nicely
+                const result = faceLandmarkerRef.current.detectForVideo(video, startTimeMs)
+                latestFaceLandmarks.current = result
+
+                // Clear any lingering detection boxes
+                latestOutput.current = []
             }
         } catch (e) {
-            console.error('[CV] Inference error:', e)
+            console.error(`[CV] ${activeModel} Inference error:`, e)
         }
 
         const end = performance.now()
@@ -422,6 +641,13 @@ export default function CvWebcamScene() {
                 <canvas
                     ref={canvasRef}
                     className="absolute inset-0 pointer-events-none"
+                    style={{ zIndex: 1 }}
+                />
+
+                <canvas
+                    ref={webglCanvasRef}
+                    className="absolute inset-0 pointer-events-none"
+                    style={{ zIndex: 2 }}
                 />
 
                 {/* Camera States */}
@@ -455,7 +681,7 @@ export default function CvWebcamScene() {
                 {modelStatus === 'loading' && (
                     <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-10 px-12">
                         <p className="text-[var(--color-red)] font-[family-name:var(--font-mono)] text-sm tracking-widest uppercase mb-6 animate-pulse">
-                            Downloading YOLOv8n Weights
+                            {activeModel === 'detection' ? 'Downloading YOLOv8n Weights' : 'Downloading MediaPipe Weights'}
                         </p>
                         <div className="w-full max-w-md h-1 bg-gray-900 rounded-full overflow-hidden relative">
                             <motion.div
@@ -466,7 +692,7 @@ export default function CvWebcamScene() {
                             />
                         </div>
                         <p className="text-[var(--color-text-dim)] font-[family-name:var(--font-mono)] text-[10px] tracking-widest uppercase mt-4">
-                            {Math.round(loadingProgress)}% / TARGET: ONNX [WebGPU → WebGL → WASM]
+                            {Math.round(loadingProgress)}% / TARGET: {activeModel === 'detection' ? 'ONNX [WebGPU → WebGL → WASM]' : 'MediaPipe [WASM]'}
                         </p>
                     </div>
                 )}
