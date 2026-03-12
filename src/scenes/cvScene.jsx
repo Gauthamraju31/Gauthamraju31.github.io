@@ -20,7 +20,7 @@ const COCO_LABELS = [
 // ─── Model configuration ─────────────────────────────────────────────────────
 // const MODEL_URL = 'https://huggingface.co/nickmuchi/yolov8n-onnx/resolve/main/yolov8n.onnx'
 // const MODEL_URL = 'https://huggingface.co/unity/inference-engine-yolo/resolve/ed7f4daf9263d0d31be1d60b9d67c8baea721d60/yolov8n.onnx'
-const MODEL_URL = '../../assets/yolov8n.onnx'
+const MODEL_URL = '/models/yolov8n.onnx'
 const MODEL_INPUT_SIZE = 640 // YOLOv8n expects 640x640
 const CONF_THRESHOLD = 0.45
 const IOU_THRESHOLD = 0.5
